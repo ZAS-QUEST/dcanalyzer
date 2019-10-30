@@ -1,63 +1,90 @@
-import glob
-from lxml import etree
 import sys
+import time
+import glob
+import requests
+from lxml import etree
+from lxml.html.soupparser import fromstring
 
-def getIdentifiers(filename,typ): 
+def getIdentifiers(filename, typ):  
     tree = etree.parse(filename)
     etree.register_namespace('dc', 'http://purl.org/dc/elements/1.1/')
     #retrieve all tags <dc:format>
     dcformats = tree.findall(".//{http://purl.org/dc/elements/1.1/}format")
-    #retrieve all identifiers within a <oai_dc:dc> if there is reference to an ELAN file
+    #retrieve all identifiers within a <oai_dc:dc> if there is reference to  file of given type
     for dcformat in dcformats: 
-        if dcformat.text==typ: 
+        if dcformat.text == typ: 
             identifiers = dcformat.findall("../{http://purl.org/dc/elements/1.1/}identifier")
             return identifiers
+        
+def retrieve(xmlfiles, mimetype): 
+    #retrieve all identifiers found in the xml files which include relevant mimetype
+    globalidentifiers = [getIdentifiers(x,mimetype) for x in xmlfiles]
+    #remove empty return values
+    records = [x for x in globalidentifiers if x != None]
+    #flatten out tuples of multiple identifiers contained in one file 
+    IDs = [x2.text for x in records for x2 in x] 
+    print("found %i IDs (%i records) with references to %s files"%(len(IDs),len(records),mimetype))
+    return IDs, records
 
+def scan(d, xmlfiles, filetypes):
+    print("Scanning %s" % d)    
+    for filetype in filetypes:
+        IDs, records = retrieve(xmlfiles,filetypes[filetype])
+        
+def download(xmlfiles, filetype):             
+    elanIDs = retrieve(xmlfiles, filetypes[filetype])[0]
+    #for interrupted downloads, set offset where to resume download 
+    offset = 90
+    print("offset is %s" %offset)
+    for elanID in elanIDs[offset:]: 
+        #check for validity of ID
+        try:
+            soasID = elanID.split("oai:soas.ac.uk:")[1]  
+        except IndexError: #filename does not start with oai:soas.ac.uk:, so we are not interested
+            continue
+        #prepare request
+        url = "https://elar.soas.ac.uk/Record/%s" % soasID
+        phpsessid = ""
+        cookie = {'PHPSESSID': phpsessid} 
+        user, password = open('password').read().strip().split(',') #it is unclear whether we need user and pw; possibly the Session ID is sufficient
+        payload = {'user':user, 'password':password}
+        
+        #retrieve catalog page
+        print("retrieving %s" % url)
+        with requests.Session() as s:
+            r = s.post(url, cookies=cookie, data=payload)
+            html = r.text
+            #extract links to ELAN files
+            try:
+                links = fromstring(html).findall('.//tbody/tr/td/a')    
+                eaflocations = list(set([a.attrib["href"] for a in links if a.attrib["href"].endswith('eaf')])) #make this configurable for other types
+            except AttributeError:
+                continue
+            #dowload identified files
+            for eaflocation in eaflocations:
+                eafname = eaflocation.split('/')[-1] 
+                print("  downloading %s:" %eafname, end = ' '), 
+                eafname = "%s.eaf" % eafname[:200] #avoid overlong file names
+                r2 = s.post(eaflocation, cookies=cookie, data=payload) 
+                eafcontent = r2.text 
+                with open("eafs/%s" % eafname,'w') as localeaf: 
+                    localeaf.write(eafcontent)
+                print("done")
+        #give the server some time to recover
+        time.sleep(4)
+        
 if __name__ == "__main__":
     d = sys.argv[1] #get directory to scan 
     #get all xmlfiles in directory
     xmlfiles = glob.glob("%s/*xml"%d) 
     
-    #retrieve all identifiers found in the xml files which include ELAN files
-    globalidentifiers = [getIdentifiers(x,"text/x-eaf+xml") for x in xmlfiles]
-    #remove empty return values
-    nonemptyglobalidentifiers = [x for x in globalidentifiers if x != None]
-    #flatten out tuples of multiple identifiers contained in one file 
-    flatlist = [x2.text for x in nonemptyglobalidentifiers for x2 in x]
-    print("found %i IDs (%i records) with references to ELAN files in %s"%(len(flatlist),len(nonemptyglobalidentifiers),d))
+    filetypes = {
+        "ELAN":"text/x-eaf+xml",
+        "Toolbox":"text/x-toolbox-text",
+        "transcriber":"text/x-trs",
+        "praat":"text/praat-textgrid",
+        "Flex":"FLEx"
+        }        
     
-     
-    #retrieve all identifiers found in the xml files which include Toolbox files
-    globalidentifiers = [getIdentifiers(x,"text/x-toolbox-text") for x in xmlfiles]
-    #remove empty return values
-    nonemptyglobalidentifiers = [x for x in globalidentifiers if x != None]
-    #flatten out tuples of multiple identifiers contained in one file 
-    flatlist = [x2.text for x in nonemptyglobalidentifiers for x2 in x]
-    print("found %i IDs (%i records) with references to Toolbox files in %s"%(len(flatlist),len(nonemptyglobalidentifiers),d))
-    
-    #retrieve all identifiers found in the xml files which include transcriber files
-    globalidentifiers = [getIdentifiers(x,"text/x-trs") for x in xmlfiles]
-    #remove empty return values
-    nonemptyglobalidentifiers = [x for x in globalidentifiers if x != None]
-    #flatten out tuples of multiple identifiers contained in one file 
-    flatlist = [x2.text for x in nonemptyglobalidentifiers for x2 in x]
-    print("found %i IDs (%i records) with references to transcriber files in %s"%(len(flatlist),len(nonemptyglobalidentifiers),d))
-    
-    #retrieve all identifiers found in the xml files which include praat files
-    globalidentifiers = [getIdentifiers(x,"text/praat-textgrid") for x in xmlfiles]
-    #remove empty return values
-    nonemptyglobalidentifiers = [x for x in globalidentifiers if x != None]
-    #flatten out tuples of multiple identifiers contained in one file 
-    flatlist = [x2.text for x in nonemptyglobalidentifiers for x2 in x]
-    print("found %i IDs (%i records) with references to praat files in %s"%(len(flatlist),len(nonemptyglobalidentifiers),d))
-     
-    #retrieve all identifiers found in the xml files which include Flex files
-    globalidentifiers = [getIdentifiers(x,"FLEx") for x in xmlfiles] #format is not proper MIME type
-    #remove empty return values
-    nonemptyglobalidentifiers = [x for x in globalidentifiers if x != None]
-    #flatten out tuples of multiple identifiers contained in one file 
-    flatlist = [x2.text for x in nonemptyglobalidentifiers for x2 in x]
-    print("found %i IDs (%i records) with references to Flex files in %s"%(len(flatlist),len(nonemptyglobalidentifiers),d))
-        
-    
-        
+    #scan(d,xmlfiles,filetypes)
+    download(xmlfiles,"ELAN")
