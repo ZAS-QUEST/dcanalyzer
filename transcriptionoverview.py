@@ -2,6 +2,8 @@ import sys
 import time
 import glob
 import requests
+import json
+from collections import defaultdict
 from lxml import etree
 from lxml.html.soupparser import fromstring
 
@@ -63,7 +65,7 @@ def download(xmlfiles, filetype):
             #dowload identified files
             for eaflocation in eaflocations:
                 eafname = eaflocation.split('/')[-1] 
-                print("  downloading %s:" %eafname, end = ' '), 
+                print("  downloading %s:" %eafname, endchar = ' '), 
                 eafname = "%s.eaf" % eafname[:200] #avoid overlong file names
                 r2 = s.post(eaflocation, cookies=cookie, data=payload) 
                 eafcontent = r2.text 
@@ -72,19 +74,47 @@ def download(xmlfiles, filetype):
                 print("done")
         #give the server some time to recover
         time.sleep(4)
-        
+ 
+def olaceaf(xmlfile, typ): 
+    tree = etree.parse(xmlfile)
+    etree.register_namespace('dc', 'http://purl.org/dc/elements/1.1/')
+    globalidentifiers = []
+    dico = defaultdict(list)
+    #retrieve all tags <dc:format>
+    dcformats = tree.findall(".//{http://purl.org/dc/elements/1.1/}format")
+    #retrieve all identifiers within a <oai_dc:dc> if there is reference to  file of given type
+    print(len(dcformats))
+    for dcformat in dcformats:  
+        if dcformat.text.strip() == typ:  
+            identifiers = dcformat.getparent().findall(".//{http://purl.org/dc/elements/1.1/}identifier")            
+            globalidentifiers.append(identifiers)
+    records = [x for x in globalidentifiers if x != None]
+    #flatten out tuples of multiple identifiers contained in one file 
+    for IDs in records: 
+        for item in IDs: #etree.findall returns list 
+            dico[0].append(item.text.strip().replace("<","").replace(">",""))
+    with open("olac.json", "w") as out:
+        out.write(json.dumps(dico, sort_keys=True, indent=4))
+    
 if __name__ == "__main__":
-    d = sys.argv[1] #get directory to scan 
-    #get all xmlfiles in directory
-    xmlfiles = glob.glob("%s/*xml"%d) 
+    #d = sys.argv[1] #get directory to scan 
+    ##get all xmlfiles in directory
+    #xmlfiles = glob.glob("%s/*xml"%d) 
     
-    filetypes = {
-        "ELAN":"text/x-eaf+xml",
-        "Toolbox":"text/x-toolbox-text",
-        "transcriber":"text/x-trs",
-        "praat":"text/praat-textgrid",
-        "Flex":"FLEx"
-        }        
+    #filetypes = {
+        #"ELAN":"text/x-eaf+xml",
+        #"Toolbox":"text/x-toolbox-text",
+        #"transcriber":"text/x-trs",
+        #"praat":"text/praat-textgrid",
+        #"Flex":"FLEx"
+        #}        
     
-    #scan(d,xmlfiles,filetypes)
-    download(xmlfiles,"ELAN")
+    ##scan(d,xmlfiles,filetypes)
+    #download(xmlfiles,"ELAN")
+    ids = olaceaf('ListRecords-20191115.xml', 'text/x-eaf+xml')
+    
+    
+ 
+
+ 
+
